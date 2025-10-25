@@ -1,98 +1,201 @@
-import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
+import React from 'react';
+import { View, Text, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
+import { Audio } from 'expo-av';
+import * as FileSystem from 'expo-file-system/legacy';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { StatusBar } from 'expo-status-bar';
+import { useNavigation } from '@react-navigation/native';
+import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import ReviewScreen from '../../screens/ReviewScreen'
+import { RootStackParamList } from '../../types/navigation';
+import { useAudioCleanup } from '../../hooks/useAudioCleanup';
 
-import { HelloWave } from '@/components/hello-wave';
-import ParallaxScrollView from '@/components/parallax-scroll-view';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { Link } from 'expo-router';
+const API_BASE = 'https://meeting-rec-api-git-main-maximeves-projects.vercel.app'; // ⬅️ your Vercel API base
 
-export default function HomeScreen() {
+type RecordScreenNavigationProp = NativeStackNavigationProp<RootStackParamList, 'Record'>;
+
+export default function RecordScreen() {
+  const insets = useSafeAreaInsets();
+  const navigation = useNavigation<RecordScreenNavigationProp>();
+  
+  // Global audio cleanup
+  useAudioCleanup();
+  // Removed user and signOut - now handled in ProfileScreen
+
+  const [recording, setRecording] = React.useState<Audio.Recording | null>(null);
+  const [isLoading, setIsLoading] = React.useState(false);
+  const [showReview, setShowReview] = React.useState(false);
+  const [audioUri, setAudioUri] = React.useState<string | null>(null);
+  const [audioDuration, setAudioDuration] = React.useState(0);
+  const [serverResult, setServerResult] = React.useState<any>(null);
+
+
+  // START: begin opname
+  async function start() {
+    try {
+      const { status } = await Audio.requestPermissionsAsync();
+      if (status !== 'granted') return Alert.alert('Microphone Required', 'Please allow microphone access.');
+
+      await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
+
+      const rec = new Audio.Recording();
+      await rec.prepareToRecordAsync({
+        android: {
+          extension: '.wav',
+          outputFormat: Audio.AndroidOutputFormat.DEFAULT,
+          audioEncoder: Audio.AndroidAudioEncoder.DEFAULT,
+          sampleRate: 16000,
+          numberOfChannels: 1,
+          bitRate: 128000
+        },
+        ios: {
+          extension: '.wav',
+          audioQuality: Audio.IOSAudioQuality.HIGH,
+          sampleRate: 16000,
+          numberOfChannels: 1,
+          bitRate: 128000,
+          outputFormat: Audio.IOSOutputFormat.LINEARPCM
+        },
+        web: {}
+      } as any);
+
+      await rec.startAsync();
+      setRecording(rec);
+      setServerResult(null);
+    } catch (e: any) {
+      console.error(e);
+      Alert.alert('Start Failed', String(e?.message || e));
+    }
+  }
+
+  // STOP: stop opname en ga naar review (geen automatische upload)
+  async function stop() {
+    if (!recording) return;
+    try {
+      console.log('Stopping recording...');
+      setIsLoading(true);
+
+      await recording.stopAndUnloadAsync();
+      const uri = recording.getURI()!;
+      console.log('Recording stopped, URI:', uri);
+      setRecording(null);
+
+      // Get duration for the review screen
+      const s = new Audio.Sound();
+      await s.loadAsync({ uri }, {}, true);
+      const status = await s.getStatusAsync();
+      const duration = (status as any).durationMillis || 0;
+      console.log('Audio duration:', duration);
+      await s.unloadAsync(); // Clean up immediately
+      
+      setAudioDuration(duration);
+      setAudioUri(uri);
+      console.log('Navigating to ReviewScreen...');
+      navigation.navigate('Review', {
+        audioUri: uri,
+        audioDuration: duration,
+        serverResult: null
+      });
+    } catch (e: any) {
+      console.error('Error in stop function:', e);
+      Alert.alert('Stop Failed', String(e?.message || e));
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function upload() {
+    if (!audioUri) return;
+    try {
+      setIsLoading(true);
+      console.log('Starting upload to:', `${API_BASE}/api/transcribe`);
+      
+      const audioBase64 = await FileSystem.readAsStringAsync(audioUri, { encoding: 'base64' });
+      console.log('Audio size:', Math.round(audioBase64.length * 3 / 4 / 1024), 'KB');
+      
+      const requestBody = { audioBase64, mime: 'audio/wav', lang: 'auto', summarize: true };
+      console.log('Request body size:', JSON.stringify(requestBody).length, 'chars');
+      
+      // Add timeout to prevent hanging
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 second timeout
+      
+      const resp = await fetch(`${API_BASE}/api/transcribe`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody),
+        signal: controller.signal
+      });
+      
+      clearTimeout(timeoutId);
+      
+      console.log('Response status:', resp.status, resp.statusText);
+      console.log('Response headers:', Object.fromEntries(resp.headers.entries()));
+      
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => '');
+        console.error('Server error response:', text);
+        throw new Error(`HTTP ${resp.status}: ${text}`);
+      }
+      
+      const data = await resp.json();
+      console.log('Server response:', data);
+      
+      if (!data?.ok) {
+        throw new Error(String(data?.error || 'Transcribe failed'));
+      }
+      setServerResult(data);
+    } catch (e: any) {
+      console.error('Upload error:', e);
+      
+      let errorMessage = e?.message || e;
+      if (e.name === 'AbortError') {
+        errorMessage = 'Request timed out after 60 seconds. The server might be overloaded.';
+      } else if (e.message?.includes('Network request failed')) {
+        errorMessage = 'Network error. Check your internet connection and server URL.';
+      }
+      
+      Alert.alert('Upload Failed', `${errorMessage}\n\nCheck console for details.`);
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  function handleBack() {
+    setShowReview(false);
+    setAudioUri(null);
+    setServerResult(null);
+    setAudioDuration(0);
+  }
+
   return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
-      headerImage={
-        <Image
-          source={require('@/assets/images/partial-react-logo.png')}
-          style={styles.reactLogo}
-        />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Welcome!</ThemedText>
-        <HelloWave />
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 1: Try it</ThemedText>
-        <ThemedText>
-          Edit <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> to see changes.
-          Press{' '}
-          <ThemedText type="defaultSemiBold">
-            {Platform.select({
-              ios: 'cmd + d',
-              android: 'cmd + m',
-              web: 'F12',
-            })}
-          </ThemedText>{' '}
-          to open developer tools.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <Link href="/modal">
-          <Link.Trigger>
-            <ThemedText type="subtitle">Step 2: Explore</ThemedText>
-          </Link.Trigger>
-          <Link.Preview />
-          <Link.Menu>
-            <Link.MenuAction title="Action" icon="cube" onPress={() => alert('Action pressed')} />
-            <Link.MenuAction
-              title="Share"
-              icon="square.and.arrow.up"
-              onPress={() => alert('Share pressed')}
-            />
-            <Link.Menu title="More" icon="ellipsis">
-              <Link.MenuAction
-                title="Delete"
-                icon="trash"
-                destructive
-                onPress={() => alert('Delete pressed')}
-              />
-            </Link.Menu>
-          </Link.Menu>
-        </Link>
+    <SafeAreaView style={{ flex: 1, backgroundColor: '#fff' }} edges={['top', 'bottom']}>
+      <StatusBar style="dark" translucent backgroundColor="transparent" />
+      <View
+        style={{
+          flex: 1,
+          paddingTop: insets.top,
+          paddingBottom: insets.bottom,
+          paddingHorizontal: 16,
+          gap: 16
+        }}
+      >
+        <TouchableOpacity
+          onPress={recording ? stop : start}
+          style={{ backgroundColor: recording ? '#E53935' : '#1E88E5', padding: 16, borderRadius: 12 }}
+        >
+          <Text style={{ color: 'white', textAlign: 'center', fontSize: 18 }}>
+            {recording ? 'Stop Recording' : '🎙️ Start Recording'}
+          </Text>
+        </TouchableOpacity>
 
-        <ThemedText>
-          {`Tap the Explore tab to learn more about what's included in this starter app.`}
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 3: Get a fresh start</ThemedText>
-        <ThemedText>
-          {`When you're ready, run `}
-          <ThemedText type="defaultSemiBold">npm run reset-project</ThemedText> to get a fresh{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> directory. This will move the current{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> to{' '}
-          <ThemedText type="defaultSemiBold">app-example</ThemedText>.
-        </ThemedText>
-      </ThemedView>
-    </ParallaxScrollView>
+        {isLoading && (
+          <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+            <ActivityIndicator />
+            <Text>Processing…</Text>
+          </View>
+        )}
+      </View>
+    </SafeAreaView>
   );
 }
-
-const styles = StyleSheet.create({
-  titleContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  stepContainer: {
-    gap: 8,
-    marginBottom: 8,
-  },
-  reactLogo: {
-    height: 178,
-    width: 290,
-    bottom: 0,
-    left: 0,
-    position: 'absolute',
-  },
-});
