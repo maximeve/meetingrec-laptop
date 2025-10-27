@@ -42,7 +42,7 @@ export default function ReviewScreen() {
   useAudioCleanup();
   
   // Get props from navigation params
-  const { audioUri, audioDuration, serverResult } = route.params || {};
+  const { audioUri, audioDuration, serverResult, savedActionablePoints } = route.params || {};
   
   // Check if this is a saved recording (coming from HistoryScreen)
   const isSavedRecording = !!serverResult && serverResult.ok === true;
@@ -55,7 +55,7 @@ export default function ReviewScreen() {
   const [showTitleInput, setShowTitleInput] = React.useState(false);
   const [isLoading, setIsLoading] = React.useState(false);
   const [currentServerResult, setCurrentServerResult] = React.useState(serverResult);
-  const [actionablePoints, setActionablePoints] = React.useState<any[]>([]);
+  const [actionablePoints, setActionablePoints] = React.useState<any[]>(savedActionablePoints || []);
   const [isLoadingActionable, setIsLoadingActionable] = React.useState(false);
 
   // Initialize audio and waveform when component mounts
@@ -108,6 +108,15 @@ export default function ReviewScreen() {
   async function initializeAudio() {
     try {
       console.log('Initializing audio with URI:', audioUri);
+      
+      // Configure audio mode for better volume
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+        staysActiveInBackground: false,
+        playsInSilentModeIOS: true,
+        shouldDuckAndroid: false,
+        playThroughEarpieceAndroid: false,
+      });
       
       // Check if file exists
       const fileInfo = await FileSystem.getInfoAsync(audioUri);
@@ -212,6 +221,10 @@ export default function ReviewScreen() {
         await sound.setPositionAsync(0);
         setAudioProgress(0);
       }
+      
+      // Ensure volume is set to maximum before playing
+      await sound.setVolumeAsync(1.0);
+      await sound.setIsMutedAsync(false);
       await sound.playAsync();
       setIsPlaying(true);
     }
@@ -363,7 +376,8 @@ export default function ReviewScreen() {
           bullets: currentServerResult.bullets || [],
           summary: currentServerResult.summary || { bullets: [] },
           topics: currentServerResult.topics || []
-        } : undefined
+        } : undefined,
+        actionablePoints: actionablePoints.length > 0 ? actionablePoints : undefined
       };
 
       console.log('Saving recording with data:', recordingData);

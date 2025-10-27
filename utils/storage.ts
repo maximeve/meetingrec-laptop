@@ -16,6 +16,16 @@ export interface SavedRecording {
     };
     topics: string[];
   };
+  actionablePoints?: Array<{
+    id: string;
+    title: string;
+    description: string;
+    priority: 'low' | 'medium' | 'high' | 'urgent';
+    category: string;
+    dueDate: string;
+    assignee: string;
+    status: 'pending' | 'in-progress' | 'completed' | 'cancelled';
+  }>;
 }
 
 const RECORDINGS_KEY = 'saved_recordings';

@@ -18,6 +18,21 @@ import { useAudioCleanup } from '../hooks/useAudioCleanup';
 
 type HistoryScreenNavigationProp = NativeStackNavigationProp<RootStackParamList, 'History'>;
 
+function getPriorityColor(priority: string): string {
+  switch (priority.toLowerCase()) {
+    case 'urgent':
+      return '#d32f2f';
+    case 'high':
+      return '#f57c00';
+    case 'medium':
+      return '#1976d2';
+    case 'low':
+      return '#388e3c';
+    default:
+      return '#666';
+  }
+}
+
 export default function HistoryScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<HistoryScreenNavigationProp>();
@@ -117,7 +132,8 @@ export default function HistoryScreen() {
       navigation.navigate('Review', {
         audioUri: validAudioUri,
         audioDuration: recording.audioDuration,
-        serverResult: serverResult
+        serverResult: serverResult,
+        savedActionablePoints: recording.actionablePoints
       });
     } catch (error) {
       console.error('Error handling play recording:', error);
@@ -146,6 +162,23 @@ export default function HistoryScreen() {
             <Text style={styles.recordingTranscription} numberOfLines={2}>
               {item.transcription.fullText || 'No transcription available'}
             </Text>
+          )}
+          {item.actionablePoints && item.actionablePoints.length > 0 && (
+            <View style={styles.actionablePointsPreview}>
+              <Text style={styles.actionablePointsLabel}>
+                {item.actionablePoints.length} actionable point{item.actionablePoints.length !== 1 ? 's' : ''}
+              </Text>
+              <View style={styles.actionablePointsTags}>
+                {item.actionablePoints.slice(0, 2).map((point, index) => (
+                  <View key={index} style={[styles.priorityTag, { backgroundColor: getPriorityColor(point.priority) }]}>
+                    <Text style={styles.priorityTagText}>{point.priority}</Text>
+                  </View>
+                ))}
+                {item.actionablePoints.length > 2 && (
+                  <Text style={styles.morePointsText}>+{item.actionablePoints.length - 2} more</Text>
+                )}
+              </View>
+            </View>
           )}
         </View>
         
@@ -285,6 +318,36 @@ const styles = StyleSheet.create({
   recordingTranscription: {
     fontSize: 14,
     color: '#555',
+    fontStyle: 'italic',
+  },
+  actionablePointsPreview: {
+    marginTop: 8,
+  },
+  actionablePointsLabel: {
+    fontSize: 11,
+    color: '#FF6B35',
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  actionablePointsTags: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 4,
+  },
+  priorityTag: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
+  },
+  priorityTagText: {
+    fontSize: 10,
+    color: 'white',
+    fontWeight: '600',
+    textTransform: 'uppercase',
+  },
+  morePointsText: {
+    fontSize: 10,
+    color: '#666',
     fontStyle: 'italic',
   },
   deleteButton: {
