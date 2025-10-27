@@ -46,18 +46,21 @@ export default function RecordScreen() {
           audioEncoder: Audio.AndroidAudioEncoder.DEFAULT,
           sampleRate: 16000,
           numberOfChannels: 1,
-          bitRate: 128000
+          bitRate: 64000
         },
         ios: {
           extension: '.wav',
-          audioQuality: Audio.IOSAudioQuality.HIGH,
+          audioQuality: Audio.IOSAudioQuality.MEDIUM,
           sampleRate: 16000,
           numberOfChannels: 1,
-          bitRate: 128000,
+          bitRate: 64000,
           outputFormat: Audio.IOSOutputFormat.LINEARPCM
         },
-        web: {}
-      } as any);
+        web: {
+          mimeType: 'audio/wav',
+          bitsPerSecond: 64000
+        }
+      });
 
       await rec.startAsync();
       setRecording(rec);
@@ -76,23 +79,41 @@ export default function RecordScreen() {
       setIsLoading(true);
 
       await recording.stopAndUnloadAsync();
-      const uri = recording.getURI()!;
-      console.log('Recording stopped, URI:', uri);
+      const tempUri = recording.getURI()!;
+      console.log('Recording stopped, temp URI:', tempUri);
       setRecording(null);
+
+      // Copy to permanent storage
+      let permanentUri = `${FileSystem.documentDirectory}recording_${Date.now()}.wav`;
+      try {
+        await FileSystem.copyAsync({
+          from: tempUri,
+          to: permanentUri
+        });
+        console.log('Recording copied to permanent storage:', permanentUri);
+        
+        // Clean up temporary file
+        await FileSystem.deleteAsync(tempUri, { idempotent: true });
+        console.log('Temporary file cleaned up');
+      } catch (copyError) {
+        console.error('Error copying recording:', copyError);
+        // Fallback to temp URI if copy fails
+        permanentUri = tempUri;
+      }
 
       // Get duration for the review screen
       const s = new Audio.Sound();
-      await s.loadAsync({ uri }, {}, true);
+      await s.loadAsync({ uri: permanentUri }, {}, true);
       const status = await s.getStatusAsync();
       const duration = (status as any).durationMillis || 0;
       console.log('Audio duration:', duration);
       await s.unloadAsync(); // Clean up immediately
       
       setAudioDuration(duration);
-      setAudioUri(uri);
+      setAudioUri(permanentUri);
       console.log('Navigating to ReviewScreen...');
       navigation.navigate('Review', {
-        audioUri: uri,
+        audioUri: permanentUri,
         audioDuration: duration,
         serverResult: null
       });

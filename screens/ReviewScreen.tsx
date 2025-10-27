@@ -12,10 +12,26 @@ import { saveRecording, SavedRecording } from '../utils/storage';
 import { useAudioCleanup } from '../hooks/useAudioCleanup';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 
-const API_BASE = 'https://meeting-rec-api-git-main-maximeves-projects.vercel.app';
+const DEEPGRAM_API = 'https://meeting-rec-api-git-main-maximeves-projects.vercel.app';
+const ACTIONABLE_API = 'https://meeting-rec-backend-git-main-maximeves-projects.vercel.app';
 
 type ReviewScreenRouteProp = RouteProp<RootStackParamList, 'Review'>;
 type ReviewScreenNavigationProp = NativeStackNavigationProp<RootStackParamList, 'Review'>;
+
+function getPriorityColor(priority: string): string {
+  switch (priority.toLowerCase()) {
+    case 'urgent':
+      return '#d32f2f';
+    case 'high':
+      return '#f57c00';
+    case 'medium':
+      return '#1976d2';
+    case 'low':
+      return '#388e3c';
+    default:
+      return '#666';
+  }
+}
 
 export default function ReviewScreen() {
   const insets = useSafeAreaInsets();
@@ -39,6 +55,8 @@ export default function ReviewScreen() {
   const [showTitleInput, setShowTitleInput] = React.useState(false);
   const [isLoading, setIsLoading] = React.useState(false);
   const [currentServerResult, setCurrentServerResult] = React.useState(serverResult);
+  const [actionablePoints, setActionablePoints] = React.useState<any[]>([]);
+  const [isLoadingActionable, setIsLoadingActionable] = React.useState(false);
 
   // Initialize audio and waveform when component mounts
   React.useEffect(() => {
@@ -89,6 +107,18 @@ export default function ReviewScreen() {
 
   async function initializeAudio() {
     try {
+      console.log('Initializing audio with URI:', audioUri);
+      
+      // Check if file exists
+      const fileInfo = await FileSystem.getInfoAsync(audioUri);
+      console.log('File info:', fileInfo);
+      
+      if (!fileInfo.exists) {
+        console.error('Audio file does not exist:', audioUri);
+        Alert.alert('Error', 'Audio file not found. The recording may have been moved or deleted.');
+        return;
+      }
+      
       const s = new Audio.Sound();
       await s.loadAsync({ uri: audioUri }, {}, true);
       await s.setIsMutedAsync(false);
@@ -102,6 +132,7 @@ export default function ReviewScreen() {
       setWaveformData(waveform);
     } catch (error) {
       console.error('Failed to initialize audio:', error);
+      Alert.alert('Audio Error', `Failed to load audio: ${error.message || error}`);
     }
   }
 
@@ -190,10 +221,22 @@ export default function ReviewScreen() {
     if (!audioUri) return;
     try {
       setIsLoading(true);
-      console.log('Starting upload to:', `${API_BASE}/api/transcribe`);
+      console.log('Starting upload to:', `${DEEPGRAM_API}/api/transcribe`);
+      
+      // Check file size before uploading
+      const fileInfo = await FileSystem.getInfoAsync(audioUri);
+      const fileSizeKB = Math.round((fileInfo.size || 0) / 1024);
+      console.log('Audio file size:', fileSizeKB, 'KB');
+      
+      // Check if file is too large (limit to 10MB)
+      if (fileSizeKB > 10240) {
+        Alert.alert('File Too Large', `Audio file is ${fileSizeKB}KB. Please record a shorter audio or try again.`);
+        setIsLoading(false);
+        return;
+      }
       
       const audioBase64 = await FileSystem.readAsStringAsync(audioUri, { encoding: 'base64' });
-      console.log('Audio size:', Math.round(audioBase64.length * 3 / 4 / 1024), 'KB');
+      console.log('Audio base64 size:', Math.round(audioBase64.length * 3 / 4 / 1024), 'KB');
       
       const requestBody = { audioBase64, mime: 'audio/wav', lang: 'auto', summarize: true };
       console.log('Request body size:', JSON.stringify(requestBody).length, 'chars');
@@ -202,7 +245,7 @@ export default function ReviewScreen() {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 second timeout
       
-      const resp = await fetch(`${API_BASE}/api/transcribe`, {
+      const resp = await fetch(`${DEEPGRAM_API}/api/transcribe`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(requestBody),
@@ -342,6 +385,49 @@ export default function ReviewScreen() {
     handleBack();
   }
 
+  async function extractActionablePoints() {
+    if (!currentServerResult?.full_text) {
+      Alert.alert('No Transcription', 'Please transcribe the audio first before extracting actionable points.');
+      return;
+    }
+
+    try {
+      setIsLoadingActionable(true);
+      console.log('Extracting actionable points from transcription...');
+      
+      const requestBody = {
+        transcription: currentServerResult.full_text,
+        context: recordingTitle || 'Meeting recording'
+      };
+
+      const resp = await fetch(`${ACTIONABLE_API}/api/actionable-points`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody)
+      });
+
+      if (!resp.ok) {
+        const errorText = await resp.text().catch(() => '');
+        throw new Error(`HTTP ${resp.status}: ${errorText}`);
+      }
+
+      const data = await resp.json();
+      console.log('Actionable points response:', data);
+
+      if (data.ok && data.actionablePoints) {
+        setActionablePoints(data.actionablePoints);
+        Alert.alert('Success', `Found ${data.actionablePoints.length} actionable points!`);
+      } else {
+        throw new Error(data.error || 'Failed to extract actionable points');
+      }
+    } catch (error) {
+      console.error('Error extracting actionable points:', error);
+      Alert.alert('Error', `Failed to extract actionable points: ${error.message}`);
+    } finally {
+      setIsLoadingActionable(false);
+    }
+  }
+
   async function handleSaveRecording() {
     console.log('handleSaveRecording called with title:', recordingTitle);
     if (!recordingTitle.trim()) {
@@ -374,7 +460,7 @@ export default function ReviewScreen() {
         />
         
         {/* Time display */}
-        <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 16 }}>
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 0 }}>
           <Text style={{ fontSize: 14, color: '#666' }}>
             {formatTime(audioProgress / 1000)}
           </Text>
@@ -388,7 +474,7 @@ export default function ReviewScreen() {
           <TouchableOpacity onPress={togglePlayPause} style={{ padding: 12 }}>
             <IconSymbol 
               name={isPlaying ? 'pause.fill' : 'play.fill'} 
-              size={32} 
+              size={24} 
               color="#333" 
             />
           </TouchableOpacity>
@@ -464,6 +550,34 @@ export default function ReviewScreen() {
               {currentServerResult.full_text || 'No transcription available'}
             </Text>
 
+            {/* Actionable Points Button */}
+            <TouchableOpacity 
+              onPress={extractActionablePoints}
+              disabled={isLoadingActionable}
+              style={{ 
+                backgroundColor: isLoadingActionable ? '#ccc' : '#FF6B35', 
+                padding: 12, 
+                borderRadius: 10, 
+                marginBottom: 16,
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}
+            >
+              {isLoadingActionable ? (
+                <>
+                  <ActivityIndicator size="small" color="white" style={{ marginRight: 8 }} />
+                  <Text style={{ color: 'white', textAlign: 'center', fontWeight: '600' }}>
+                    Extracting Actionable Points...
+                  </Text>
+                </>
+              ) : (
+                <Text style={{ color: 'white', textAlign: 'center', fontWeight: '600' }}>
+                  Extract Actionable Points
+                </Text>
+              )}
+            </TouchableOpacity>
+
             {/* Summary bullets */}
             {currentServerResult.summary && currentServerResult.summary.bullets && currentServerResult.summary.bullets.length > 0 && (
               <>
@@ -523,6 +637,70 @@ export default function ReviewScreen() {
                       ))}
                     </View>
                   </TouchableOpacity>
+                ))}
+              </>
+            )}
+
+            {/* Actionable Points */}
+            {actionablePoints.length > 0 && (
+              <>
+                <Text style={{ fontWeight: '700', fontSize: 18, marginBottom: 8, marginTop: 16 }}>Actionable Points</Text>
+                {actionablePoints.map((point: any, i: number) => (
+                  <View
+                    key={i}
+                    style={{
+                      backgroundColor: '#fff3e0',
+                      padding: 12,
+                      borderRadius: 8,
+                      marginBottom: 8,
+                      borderLeftWidth: 4,
+                      borderLeftColor: getPriorityColor(point.priority)
+                    }}
+                  >
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
+                      <Text style={{ fontSize: 16, fontWeight: '600', flex: 1, marginRight: 8 }}>
+                        {point.title}
+                      </Text>
+                      <View style={{
+                        backgroundColor: getPriorityColor(point.priority),
+                        paddingHorizontal: 8,
+                        paddingVertical: 4,
+                        borderRadius: 12
+                      }}>
+                        <Text style={{ fontSize: 12, color: 'white', fontWeight: '600', textTransform: 'uppercase' }}>
+                          {point.priority}
+                        </Text>
+                      </View>
+                    </View>
+                    
+                    <Text style={{ fontSize: 14, lineHeight: 20, marginBottom: 8, color: '#333' }}>
+                      {point.description}
+                    </Text>
+                    
+                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                      {point.category && (
+                        <View style={{ backgroundColor: '#e8f5e8', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12 }}>
+                          <Text style={{ fontSize: 12, color: '#2e7d32', fontWeight: '500' }}>
+                            {point.category}
+                          </Text>
+                        </View>
+                      )}
+                      {point.dueDate && (
+                        <View style={{ backgroundColor: '#fff8e1', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12 }}>
+                          <Text style={{ fontSize: 12, color: '#f57c00', fontWeight: '500' }}>
+                            Due: {point.dueDate}
+                          </Text>
+                        </View>
+                      )}
+                      {point.assignee && (
+                        <View style={{ backgroundColor: '#e3f2fd', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12 }}>
+                          <Text style={{ fontSize: 12, color: '#1976d2', fontWeight: '500' }}>
+                            {point.assignee}
+                          </Text>
+                        </View>
+                      )}
+                    </View>
+                  </View>
                 ))}
               </>
             )}

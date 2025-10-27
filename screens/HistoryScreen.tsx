@@ -12,7 +12,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { StatusBar } from 'expo-status-bar';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { getRecordings, deleteRecording, SavedRecording } from '../utils/storage';
+import { getRecordings, deleteRecording, SavedRecording, ensureAudioFileExists } from '../utils/storage';
 import { RootStackParamList } from '../types/navigation';
 import { useAudioCleanup } from '../hooks/useAudioCleanup';
 
@@ -93,25 +93,36 @@ export default function HistoryScreen() {
     return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
   }
 
-  function handlePlayRecording(recording: SavedRecording) {
-    // Navigate to Review screen with the saved recording data
-    // Convert stored transcription back to the format expected by ReviewScreen
-    const serverResult = recording.transcription ? {
-      full_text: recording.transcription.fullText,
-      words: recording.transcription.words,
-      bullets: recording.transcription.bullets,
-      summary: recording.transcription.summary,
-      topics: recording.transcription.topics,
-      ok: true
-    } : null;
-
-    console.log('Navigating to Review with serverResult:', serverResult);
+  async function handlePlayRecording(recording: SavedRecording) {
+    console.log('Playing recording with audioUri:', recording.audioUri);
     
-    navigation.navigate('Review', {
-      audioUri: recording.audioUri,
-      audioDuration: recording.audioDuration,
-      serverResult: serverResult
-    });
+    try {
+      // Check if audio file exists
+      const validAudioUri = await ensureAudioFileExists(recording);
+      console.log('Valid audio URI:', validAudioUri);
+      
+      // Navigate to Review screen with the saved recording data
+      // Convert stored transcription back to the format expected by ReviewScreen
+      const serverResult = recording.transcription ? {
+        full_text: recording.transcription.fullText,
+        words: recording.transcription.words,
+        bullets: recording.transcription.bullets,
+        summary: recording.transcription.summary,
+        topics: recording.transcription.topics,
+        ok: true
+      } : null;
+
+      console.log('Navigating to Review with serverResult:', serverResult);
+      
+      navigation.navigate('Review', {
+        audioUri: validAudioUri,
+        audioDuration: recording.audioDuration,
+        serverResult: serverResult
+      });
+    } catch (error) {
+      console.error('Error handling play recording:', error);
+      Alert.alert('Error', 'Could not access the recording. The audio file may have been moved or deleted.');
+    }
   }
 
   function renderRecording({ item }: { item: SavedRecording }) {

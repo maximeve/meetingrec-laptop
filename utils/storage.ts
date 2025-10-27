@@ -133,3 +133,26 @@ export async function getRecording(id: string): Promise<SavedRecording | null> {
     return null;
   }
 }
+
+// Check if a recording's audio file exists and migrate if needed
+export async function ensureAudioFileExists(recording: SavedRecording): Promise<string> {
+  try {
+    console.log('Checking if audio file exists:', recording.audioUri);
+    
+    const fileInfo = await FileSystem.getInfoAsync(recording.audioUri);
+    console.log('File info for recording:', fileInfo);
+    
+    if (fileInfo.exists) {
+      console.log('Audio file exists, returning original URI');
+      return recording.audioUri;
+    }
+    
+    console.log('Audio file does not exist, this might be an old recording with temporary URI');
+    // For now, return the original URI and let the ReviewScreen handle the error
+    // In the future, we could implement a migration strategy here
+    return recording.audioUri;
+  } catch (error) {
+    console.error('Error checking audio file:', error);
+    return recording.audioUri;
+  }
+}
