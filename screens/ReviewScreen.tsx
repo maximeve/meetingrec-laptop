@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, Text, TouchableOpacity, ActivityIndicator, Alert, ScrollView, Platform, Dimensions, TextInput, Animated, Share, Linking } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { PanGestureHandler, State, GestureHandlerRootView } from 'react-native-gesture-handler';
 import { Audio } from 'expo-av';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -9,9 +10,11 @@ import { useNavigation, useRoute, RouteProp, useFocusEffect } from '@react-navig
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types/navigation';
 import WaveformComponent, { generateWaveformData } from '../components/WaveformComponent';
-import { saveRecording, SavedRecording } from '../utils/storage';
+import { saveRecording, SavedRecording, getRecordings } from '../utils/storage';
 import { useAudioCleanup } from '../hooks/useAudioCleanup';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import ActionablePointCard from '../components/ActionablePointCard';
+import { addToCalendar, generateICSContent } from '../utils/calendar';
 
 const DEEPGRAM_API = 'https://meeting-rec-api-git-main-maximeves-projects.vercel.app';
 const ACTIONABLE_API = 'https://meeting-rec-backend-git-main-maximeves-projects.vercel.app';
@@ -20,18 +23,13 @@ type ReviewScreenRouteProp = RouteProp<RootStackParamList, 'Review'>;
 type ReviewScreenNavigationProp = NativeStackNavigationProp<RootStackParamList, 'Review'>;
 
 function getPriorityColor(priority: string): string {
-  switch (priority.toLowerCase()) {
-    case 'urgent':
-      return '#d32f2f';
-    case 'high':
-      return '#f57c00';
-    case 'medium':
-      return '#1976d2';
-    case 'low':
-      return '#388e3c';
-    default:
-      return '#666';
-  }
+  const priorityMap: Record<string, string> = {
+    'urgent': '#d32f2f',
+    'high': '#f57c00',
+    'medium': '#1976d2',
+    'low': '#388e3c'
+  };
+  return priorityMap[priority.toLowerCase()] || '#666';
 }
 
 export default function ReviewScreen() {
@@ -59,7 +57,6 @@ export default function ReviewScreen() {
   const [actionablePoints, setActionablePoints] = React.useState<any[]>(savedActionablePoints || []);
   const [isLoadingActionable, setIsLoadingActionable] = React.useState(false);
   const [activeTab, setActiveTab] = React.useState<'transcription' | 'topics' | 'actionable'>('transcription');
-  const [swipePositions, setSwipePositions] = React.useState<Record<string, Animated.Value>>({});
 
   // Initialize audio and waveform when component mounts
   React.useEffect(() => {
@@ -70,19 +67,6 @@ export default function ReviewScreen() {
     };
   }, [audioUri]);
 
-  // Reset all swipe positions when actionable points change
-  React.useEffect(() => {
-    setSwipePositions(prev => {
-      const newPositions = { ...prev };
-      // Reset all existing positions to 0
-      Object.keys(newPositions).forEach(id => {
-        if (newPositions[id]) {
-          newPositions[id].setValue(0);
-        }
-      });
-      return newPositions;
-    });
-  }, [actionablePoints.length]);
 
   // Handle screen focus changes
   useFocusEffect(
@@ -110,7 +94,7 @@ export default function ReviewScreen() {
         }
         await sound.unloadAsync();
         console.log('Audio cleaned up successfully');
-      } catch (error) {
+      } catch (error: any) {
         console.error('Error cleaning up audio:', error);
         // Force unload even if stop fails
         try {
@@ -156,7 +140,7 @@ export default function ReviewScreen() {
       // Generate waveform data
       const waveform = generateWaveformData(audioDuration / 1000);
       setWaveformData(waveform);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to initialize audio:', error);
       Alert.alert('Audio Error', `Failed to load audio: ${error.message || error}`);
     }
@@ -255,7 +239,7 @@ export default function ReviewScreen() {
       
       // Check file size before uploading
       const fileInfo = await FileSystem.getInfoAsync(audioUri);
-      const fileSizeKB = Math.round((fileInfo.size || 0) / 1024);
+      const fileSizeKB = Math.round(('size' in fileInfo ? fileInfo.size : 0) / 1024);
       console.log('Audio file size:', fileSizeKB, 'KB');
       
       // Check if file is too large (limit to 10MB)
@@ -452,7 +436,7 @@ export default function ReviewScreen() {
       } else {
         throw new Error(data.error || 'Failed to extract actionable points');
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error extracting actionable points:', error);
       Alert.alert('Error', `Failed to extract actionable points: ${error.message}`);
     } finally {
@@ -460,7 +444,7 @@ export default function ReviewScreen() {
     }
   }
 
-  function deleteActionablePoint(pointId: string) {
+  async function deleteActionablePoint(pointId: string) {
     Alert.alert(
       'Delete Actionable Point',
       'Are you sure you want to delete this actionable point? This action cannot be undone.',
@@ -472,105 +456,56 @@ export default function ReviewScreen() {
         {
           text: 'Delete',
           style: 'destructive',
-          onPress: () => {
-            // First, reset all swipe positions to prevent visual glitches
-            setSwipePositions(prev => {
-              const newPositions = { ...prev };
-              Object.keys(newPositions).forEach(id => {
-                if (newPositions[id]) {
-                  newPositions[id].setValue(0);
+          onPress: async () => {
+            try {
+              // Delete the point from local state
+              const updatedPoints = actionablePoints.filter(point => point.id !== pointId);
+              setActionablePoints(updatedPoints);
+
+              // If this is a saved recording, update it in storage
+              if (isSavedRecording && currentServerResult) {
+                try {
+                  // Get all existing recordings
+                  const recordings = await getRecordings();
+                  
+                  // Find the current recording by matching audioUri and audioDuration
+                  const recordingIndex = recordings.findIndex(r => 
+                    r.audioUri === audioUri && r.audioDuration === audioDuration
+                  );
+                  
+                  if (recordingIndex !== -1) {
+                    // Update the recording with new actionable points
+                    recordings[recordingIndex].actionablePoints = updatedPoints.length > 0 ? updatedPoints : undefined;
+                    
+                    // Save the updated recordings back to storage
+                    await AsyncStorage.setItem('saved_recordings', JSON.stringify(recordings));
+                    console.log('Updated saved recording with deleted actionable point');
+                  } else {
+                    console.log('Could not find recording to update');
+                  }
+                } catch (error) {
+                  console.error('Error updating saved recording:', error);
                 }
-              });
-              return newPositions;
-            });
-            
-            // Then delete the point and clean up its swipe position
-            setActionablePoints(prev => prev.filter(point => point.id !== pointId));
-            setSwipePositions(prev => {
-              const newPositions = { ...prev };
-              delete newPositions[pointId];
-              return newPositions;
-            });
+              }
+            } catch (error) {
+              console.error('Error deleting actionable point:', error);
+              Alert.alert('Error', 'Failed to delete actionable point. Please try again.');
+            }
           }
         }
       ]
     );
   }
 
-  function getSwipePosition(pointId: string): Animated.Value {
-    if (!swipePositions[pointId]) {
-      const newPosition = new Animated.Value(0);
-      setSwipePositions(prev => ({ ...prev, [pointId]: newPosition }));
-      return newPosition;
-    }
-    return swipePositions[pointId];
-  }
-
-  function onSwipeGesture(pointId: string, event: any) {
-    const { translationX, translationY, state } = event.nativeEvent;
-    const swipePosition = getSwipePosition(pointId);
-    
-    // Only respond to horizontal swipes, ignore vertical movement
-    if (Math.abs(translationY) > Math.abs(translationX)) {
-      return;
-    }
-    
-    if (state === State.ACTIVE) {
-      // Only allow swiping left (negative translationX) and limit vertical movement
-      if (Math.abs(translationY) < 30) {
-        const clampedValue = Math.max(translationX, -160);
-        swipePosition.setValue(clampedValue);
-      }
-    } else if (state === State.END) {
-      // Only process if it was primarily a horizontal gesture
-      if (Math.abs(translationY) < 30) {
-        // Snap back to original position or reveal action buttons
-        if (translationX < -60) {
-          // Reveal action buttons - lower threshold for easier access
-          Animated.spring(swipePosition, {
-            toValue: -160,
-            useNativeDriver: true,
-            tension: 100,
-            friction: 8,
-          }).start();
-        } else {
-          // Snap back to original position
-          Animated.spring(swipePosition, {
-            toValue: 0,
-            useNativeDriver: true,
-            tension: 100,
-            friction: 8,
-          }).start();
-        }
-      } else {
-        // Reset position if it was primarily vertical movement
-        Animated.spring(swipePosition, {
-          toValue: 0,
-          useNativeDriver: true,
-          tension: 100,
-          friction: 8,
-        }).start();
-      }
-    }
-  }
-
-  function resetSwipePosition(pointId: string) {
-    const swipePosition = getSwipePosition(pointId);
-    Animated.spring(swipePosition, {
-      toValue: 0,
-      useNativeDriver: true,
-      tension: 100,
-      friction: 8,
-    }).start();
-  }
 
   function formatActionablePointForSharing(point: any): string {
-    const priorityEmoji = {
+    const priorityEmojiMap: Record<string, string> = {
       'urgent': '🔴',
       'high': '🟠', 
       'medium': '🟡',
       'low': '🟢'
-    }[point.priority] || '⚪';
+    };
+    const priorityEmoji = priorityEmojiMap[point.priority] || '⚪';
 
     let content = `${priorityEmoji} ${point.title}\n`;
     content += `${point.description}\n`;
@@ -602,78 +537,7 @@ export default function ReviewScreen() {
     }
   }
 
-  function generateICSContent(point: any): string {
-    const now = new Date();
-    const dueDate = point.dueDate ? new Date(point.dueDate) : new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000); // Default to 7 days from now
-    
-    // Format dates for ICS (YYYYMMDDTHHMMSSZ)
-    const formatICSDate = (date: Date) => {
-      return date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
-    };
-    
-    const startDate = formatICSDate(dueDate);
-    const endDate = formatICSDate(new Date(dueDate.getTime() + 60 * 60 * 1000)); // 1 hour duration
-    const created = formatICSDate(now);
-    
-    let ics = `BEGIN:VCALENDAR
-VERSION:2.0
-PRODID:-//MeetingRec//Actionable Point//EN
-BEGIN:VEVENT
-UID:${point.id}@meetingrec.app
-DTSTAMP:${created}
-DTSTART:${startDate}
-DTEND:${endDate}
-SUMMARY:${point.title}
-DESCRIPTION:${point.description.replace(/\n/g, '\\n')}
-STATUS:CONFIRMED
-PRIORITY:${point.priority === 'urgent' ? '1' : point.priority === 'high' ? '2' : point.priority === 'medium' ? '3' : '4'}
-CATEGORIES:${point.category || 'Task'}
-${point.assignee ? `ATTENDEE:${point.assignee}` : ''}
-END:VEVENT
-END:VCALENDAR`;
-
-    return ics;
-  }
-
-  async function addToCalendar(point: any) {
-    try {
-      const now = new Date();
-      const dueDate = point.dueDate ? new Date(point.dueDate) : new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-      
-      // Format dates for calendar URLs (YYYYMMDDTHHMMSSZ)
-      const formatCalendarDate = (date: Date) => {
-        return date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
-      };
-      
-      const startDate = formatCalendarDate(dueDate);
-      const endDate = formatCalendarDate(new Date(dueDate.getTime() + 60 * 60 * 1000)); // 1 hour duration
-      
-      // Create calendar URLs
-      const title = encodeURIComponent(point.title);
-      const description = encodeURIComponent(point.description);
-      const location = encodeURIComponent(point.category || '');
-      
-      // Google Calendar URL (works on both iOS and Android)
-      const googleCalendarUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${startDate}/${endDate}&details=${description}&location=${location}`;
-      
-      // Try to open the calendar URL directly
-      const canOpen = await Linking.canOpenURL(googleCalendarUrl);
-      if (canOpen) {
-        await Linking.openURL(googleCalendarUrl);
-      } else {
-        // Fallback to share if direct opening fails
-        await Share.share({
-          url: googleCalendarUrl,
-          title: `Add to Calendar: ${point.title}`,
-          message: `Add "${point.title}" to your calendar`
-        });
-      }
-      
-    } catch (error) {
-      console.error('Error creating calendar event:', error);
-      Alert.alert('Error', 'Failed to create calendar event');
-    }
-  }
+  // calendar helpers imported from utils/calendar
 
   async function shareAllActionablePoints() {
     if (actionablePoints.length === 0) {
@@ -1021,169 +885,24 @@ END:VCALENDAR`;
                     </TouchableOpacity>
                   )}
                   
-                  {actionablePoints.length > 0 ? (
-                    actionablePoints.map((point: any, i: number) => (
-                      <View key={i} style={{ marginBottom: 8, position: 'relative' }}>
-                        {/* Action Buttons Background */}
-                        <View style={{
-                          position: 'absolute',
-                          right: 0,
-                          top: 0,
-                          bottom: 0,
-                          width: 160,
-                          flexDirection: 'row',
-                          zIndex: 1
-                        }}>
-                          {/* Delete Button */}
-                          <TouchableOpacity
-                            onPress={() => deleteActionablePoint(point.id)}
-                            style={{
-                              flex: 1,
-                              justifyContent: 'center',
-                              alignItems: 'center'
-                            }}
-                          >
-                            <Text style={{ color: '#d32f2f', fontSize: 24, textAlign: 'center' }}>
-                              🗑️
-                            </Text>
-                          </TouchableOpacity>
-                          
-                          {/* Share Button */}
-                          <TouchableOpacity
-                            onPress={() => shareActionablePoint(point)}
-                            style={{
-                              flex: 1,
-                              justifyContent: 'center',
-                              alignItems: 'center'
-                            }}
-                          >
-                            <Text style={{ color: '#1E88E5', fontSize: 24, textAlign: 'center' }}>
-                              📤
-                            </Text>
-                          </TouchableOpacity>
-                          
-                          {/* Calendar Button */}
-                          <TouchableOpacity
-                            onPress={() => addToCalendar(point)}
-                            style={{
-                              flex: 1,
-                              justifyContent: 'center',
-                              alignItems: 'center'
-                            }}
-                          >
-                            <Text style={{ color: '#4CAF50', fontSize: 24, textAlign: 'center' }}>
-                              📅
-                            </Text>
-                          </TouchableOpacity>
-                        </View>
-
-                        {/* Swipeable Card */}
-                        <PanGestureHandler
-                          onGestureEvent={(event) => onSwipeGesture(point.id, event)}
-                          onHandlerStateChange={(event) => onSwipeGesture(point.id, event)}
-                          activeOffsetX={[-5, 5]}
-                          failOffsetY={[-10, 10]}
-                          shouldCancelWhenOutside={false}
-                          minPointers={1}
-                          maxPointers={1}
-                        >
-                          <Animated.View
-                            style={{
-                              transform: [{
-                                translateX: getSwipePosition(point.id)
-                              }],
-                              zIndex: 2
-                            }}
-                          >
-                            <View
-                              style={{
-                                backgroundColor: '#fff3e0',
-                                padding: 12,
-                                borderRadius: 8,
-                                borderLeftWidth: 4,
-                                borderLeftColor: getPriorityColor(point.priority)
-                              }}
-                            >
-                              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
-                                <Text style={{ fontSize: 16, fontWeight: '600', flex: 1, marginRight: 8 }}>
-                                  {point.title}
-                                </Text>
-                                <View style={{
-                                  backgroundColor: getPriorityColor(point.priority),
-                                  paddingHorizontal: 8,
-                                  paddingVertical: 4,
-                                  borderRadius: 12
-                                }}>
-                                  <Text style={{ fontSize: 12, color: 'white', fontWeight: '600', textTransform: 'uppercase' }}>
-                                    {point.priority}
-                                  </Text>
-                                </View>
-                              </View>
-                              
-                              <Text style={{ fontSize: 14, lineHeight: 20, marginBottom: 8, color: '#333' }}>
-                                {point.description}
-                              </Text>
-                              
-                              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-                                {point.category && (
-                                  <View style={{ backgroundColor: '#e8f5e8', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12 }}>
-                                    <Text style={{ fontSize: 12, color: '#2e7d32', fontWeight: '500' }}>
-                                      {point.category}
-                                    </Text>
-                                  </View>
-                                )}
-                                {point.dueDate && (
-                                  <View style={{ backgroundColor: '#fff8e1', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12 }}>
-                                    <Text style={{ fontSize: 12, color: '#f57c00', fontWeight: '500' }}>
-                                      Due: {point.dueDate}
-                                    </Text>
-                                  </View>
-                                )}
-                                {point.assignee && (
-                                  <View style={{ backgroundColor: '#e3f2fd', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12 }}>
-                                    <Text style={{ fontSize: 12, color: '#1976d2', fontWeight: '500' }}>
-                                      {point.assignee}
-                                    </Text>
-                                  </View>
-                                )}
-                              </View>
-                            </View>
-                          </Animated.View>
-                        </PanGestureHandler>
-                      </View>
-                    ))
-                  ) : (
-                    <View style={{ alignItems: 'center', marginTop: 40 }}>
-                      <Text style={{ fontSize: 16, color: '#666', textAlign: 'center', marginBottom: 16 }}>
-                        No actionable points extracted yet
-                      </Text>
-                      <TouchableOpacity 
-                        onPress={extractActionablePoints}
-                        disabled={isLoadingActionable}
-                        style={{ 
-                          backgroundColor: isLoadingActionable ? '#ccc' : '#FF6B35', 
-                          padding: 12, 
-                          borderRadius: 10,
-                          flexDirection: 'row',
-                          alignItems: 'center',
-                          justifyContent: 'center'
-                        }}
-                      >
-                        {isLoadingActionable ? (
-                          <>
-                            <ActivityIndicator size="small" color="white" style={{ marginRight: 8 }} />
-                            <Text style={{ color: 'white', textAlign: 'center', fontWeight: '600' }}>
-                              Extracting...
-                            </Text>
-                          </>
+                        {actionablePoints.length > 0 ? (
+                          actionablePoints.map((point: any, i: number) => (
+                            <ActionablePointCard
+                              key={point.id || i}
+                              point={point}
+                              onDelete={deleteActionablePoint}
+                              onShare={shareActionablePoint}
+                              onCalendar={addToCalendar}
+                              getPriorityColor={getPriorityColor}
+                            />
+                          ))
                         ) : (
-                          <Text style={{ color: 'white', textAlign: 'center', fontWeight: '600' }}>
-                            Extract Actionable Points
-                          </Text>
+                          <View style={{ alignItems: 'center', marginTop: 40 }}>
+                            <Text style={{ fontSize: 16, color: '#666', textAlign: 'center', marginBottom: 16 }}>
+                              No actionable points extracted yet
+                            </Text>
+                          </View>
                         )}
-                      </TouchableOpacity>
-                    </View>
-                  )}
                 </>
               )}
             </ScrollView>

@@ -19,6 +19,7 @@
     "@vercel/node": "^3.0.0",
     "expo": "~54.0.20",
     "expo-av": "^16.0.7",
+    "expo-calendar": "^15.0.7",
     "expo-constants": "~18.0.10",
     "expo-file-system": "^19.0.17",
     "expo-font": "~14.0.9",

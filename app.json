@@ -9,7 +9,10 @@
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSCalendarsUsageDescription": "This app creates events from actionable points in your meetings."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -19,7 +22,11 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "READ_CALENDAR",
+        "WRITE_CALENDAR"
+      ]
     },
     "web": {
       "output": "static",

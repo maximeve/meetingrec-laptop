@@ -28,7 +28,34 @@ export default function RecordScreen() {
   const [audioUri, setAudioUri] = React.useState<string | null>(null);
   const [audioDuration, setAudioDuration] = React.useState(0);
   const [serverResult, setServerResult] = React.useState<any>(null);
+  const [recordingElapsedMs, setRecordingElapsedMs] = React.useState(0);
+  const [recordingStartTimeMs, setRecordingStartTimeMs] = React.useState<number | null>(null);
 
+  // Timer effect for recording duration (milliseconds precision)
+  React.useEffect(() => {
+    let interval: ReturnType<typeof setInterval> | null = null;
+    if (recording && recordingStartTimeMs != null) {
+      interval = setInterval(() => {
+        const now = Date.now();
+        const elapsed = now - recordingStartTimeMs;
+        setRecordingElapsedMs(elapsed);
+      }, 50); // update ~20 times per second
+    } else {
+      setRecordingElapsedMs(0);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [recording, recordingStartTimeMs]);
+
+  // Format time helper (mm:ss:ss) where last 'ss' = centiseconds
+  function formatTimeMs(ms: number): string {
+    const totalSeconds = Math.floor(ms / 1000);
+    const mins = Math.floor(totalSeconds / 60);
+    const secs = totalSeconds % 60;
+    const centis = Math.floor((ms % 1000) / 10); // 0..99
+    return `${mins}:${secs.toString().padStart(2, '0')}:${centis.toString().padStart(2, '0')}`;
+  }
 
   // START: begin opname
   async function start() {
@@ -64,6 +91,8 @@ export default function RecordScreen() {
 
       await rec.startAsync();
       setRecording(rec);
+      setRecordingStartTimeMs(Date.now());
+      setRecordingElapsedMs(0);
       setServerResult(null);
     } catch (e: any) {
       console.error(e);
@@ -82,6 +111,8 @@ export default function RecordScreen() {
       const tempUri = recording.getURI()!;
       console.log('Recording stopped, temp URI:', tempUri);
       setRecording(null);
+      setRecordingStartTimeMs(null);
+      setRecordingElapsedMs(0);
 
       // Copy to permanent storage
       let permanentUri = `${FileSystem.documentDirectory}recording_${Date.now()}.wav`;
@@ -201,6 +232,7 @@ export default function RecordScreen() {
           gap: 16
         }}
       >
+
         <TouchableOpacity
           onPress={recording ? stop : start}
           style={{ backgroundColor: recording ? '#E53935' : '#1E88E5', padding: 16, borderRadius: 12 }}
@@ -209,7 +241,16 @@ export default function RecordScreen() {
             {recording ? 'Stop Recording' : '🎙️ Start Recording'}
           </Text>
         </TouchableOpacity>
-
+        {recording && (
+          <Text style={{ 
+            alignSelf: 'center',
+            fontSize: 12,
+            color: '#E53935',
+            marginTop: 4
+          }}>
+            • {formatTimeMs(recordingElapsedMs)}
+          </Text>
+        )}
         {isLoading && (
           <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
             <ActivityIndicator />
