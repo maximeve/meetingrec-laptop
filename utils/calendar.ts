@@ -118,14 +118,25 @@ export async function addEventNative({
   await ensureCalendarPermissions();
   console.log('Calendar permissions granted');
 
-  // Get a default calendar to save into
+  // Prefer platform default calendar per Expo docs
+  let defaultCal: Calendar.Calendar | null = null as any;
+  try {
+    if (Platform.OS === 'ios' && typeof Calendar.getDefaultCalendarAsync === 'function') {
+      defaultCal = await (Calendar as any).getDefaultCalendarAsync();
+    }
+  } catch (e) {
+    console.log('getDefaultCalendarAsync failed, will scan calendars:', e);
+  }
+
   const calendars = await Calendar.getCalendarsAsync(Calendar.EntityTypes.EVENT);
   console.log('Available calendars:', calendars.map(c => ({ id: c.id, title: c.title, allowsModifications: c.allowsModifications, source: c.source?.name })));
-  
-  const defaultCal =
-    calendars.find(c => c.allowsModifications) ||
-    calendars.find(c => c.source?.isLocalAccount) ||
-    calendars[0];
+
+  if (!defaultCal) {
+    defaultCal =
+      calendars.find(c => c.allowsModifications) ||
+      calendars.find(c => (c as any).source?.isLocalAccount) ||
+      calendars[0] || null as any;
+  }
 
   if (!defaultCal) {
     throw new Error('No calendar available to create events');
@@ -139,10 +150,18 @@ export async function addEventNative({
     location,
     startDate,
     endDate,
-    timeZone: 'UTC', // or your local TZ id
+    // Let OS choose local timezone; setting incorrect TZ can hide events
   });
   
   console.log('Event created with ID:', eventId);
+
+  // Verify event exists
+  try {
+    const created = await Calendar.getEventAsync(eventId as any);
+    console.log('Created event fetched:', created);
+  } catch (e) {
+    console.log('Failed to fetch created event (may still exist):', e);
+  }
 
   // Optional iOS trick: open Calendar at the event's date
   if (Platform.OS === 'ios') {
@@ -159,136 +178,78 @@ export async function addEventNative({
 
 export async function addToCalendar(point: any) {
   try {
-    console.log('Adding to calendar:', point);
-    
-    const dueDate = parseActionablePointDate(point.dueDate);
-    console.log('Parsed due date:', dueDate.toISOString());
+    console.log('Adding to calendar (Expo Calendar flow):', point);
 
-    const formatCalendarDate = (date: Date) => {
-      return date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
-    };
+    const start = parseActionablePointDate(point.dueDate);
+    const end = new Date(start.getTime() + 60 * 60 * 1000);
 
-    const startDate = formatCalendarDate(dueDate);
-    const endDate = formatCalendarDate(new Date(dueDate.getTime() + 60 * 60 * 1000));
-    console.log('Formatted dates - Start:', startDate, 'End:', endDate);
+    // Build notes/description
+    let notes = String(point.description || '');
+    if (point.category) notes += `\n\nCategory: ${point.category}`;
+    if (point.assignee) notes += `\nAssignee: ${point.assignee}`;
+    if (point.priority) notes += `\nPriority: ${String(point.priority).toUpperCase()}`;
 
-    // Build comprehensive description for calendar apps
-    let description = point.description || '';
-    if (point.category) {
-      description += `\n\nCategory: ${point.category}`;
-    }
-    if (point.assignee) {
-      description += `\nAssignee: ${point.assignee}`;
-    }
-    if (point.priority) {
-      description += `\nPriority: ${point.priority.toUpperCase()}`;
-    }
-
-    const title = encodeURIComponent(point.title);
-    const encodedDescription = encodeURIComponent(description);
-    const location = encodeURIComponent(point.category || '');
-
-    console.log('Calendar event details:');
-    console.log('Title:', point.title);
-    console.log('Description:', description);
-    console.log('Location:', point.category);
-
-    // First try native event creation via expo-calendar
+    // 1) Preferred: Launch system-provided event editor with prefilled data
+    //    This requires no explicit calendar permission and works on both iOS and Android.
     try {
-      const nativeTitle = String(point.title || 'MeetingRec Action');
-      let nativeNotes = String(point.description || '');
-      if (point.category) nativeNotes += `\n\nCategory: ${point.category}`;
-      if (point.assignee) nativeNotes += `\nAssignee: ${point.assignee}`;
-      if (point.priority) nativeNotes += `\nPriority: ${String(point.priority).toUpperCase()}`;
-
-      console.log('Attempting native calendar event creation...');
-      const eventId = await addEventNative({
-        title: nativeTitle,
-        notes: nativeNotes,
+      console.log('Opening system event editor (createEventInCalendarAsync)...');
+      const dialogResult: any = await Calendar.createEventInCalendarAsync({
+        title: String(point.title || 'MeetingRec Action'),
+        startDate: start,
+        endDate: end,
+        notes,
         location: String(point.category || ''),
-        startDate: dueDate,
-        endDate: new Date(dueDate.getTime() + 60 * 60 * 1000),
       });
-      console.log('Native calendar event created successfully with ID:', eventId);
+      console.log('Dialog result from createEventInCalendarAsync:', dialogResult);
+
+      // If available, open the saved event (SDK supports openEventInCalendarAsync)
+      const eventId = dialogResult?.eventIdentifier || dialogResult?.eventId || dialogResult?.event?.id;
+      if (eventId && typeof Calendar.openEventInCalendarAsync === 'function') {
+        try {
+          await (Calendar as any).openEventInCalendarAsync({ id: eventId });
+        } catch (e) {
+          console.log('openEventInCalendarAsync failed or unavailable:', e);
+        }
+      }
+
+      Alert.alert('Success', 'Event created in your calendar');
+      return;
+    } catch (dialogErr) {
+      console.log('createEventInCalendarAsync failed, falling back to direct create:', dialogErr);
+    }
+
+    // 2) Fallback: Create directly then open calendar at the time (requires permission)
+    try {
+      const eventId = await addEventNative({
+        title: String(point.title || 'MeetingRec Action'),
+        notes,
+        location: String(point.category || ''),
+        startDate: start,
+        endDate: end,
+      });
+
+      // Attempt to open the event if API is available
+      if (eventId && typeof Calendar.openEventInCalendarAsync === 'function') {
+        try {
+          await (Calendar as any).openEventInCalendarAsync({ id: eventId });
+        } catch (e) {
+          console.log('openEventInCalendarAsync after direct create failed:', e);
+        }
+      }
+
       Alert.alert('Success', 'Event added to your calendar!');
       return;
     } catch (nativeErr) {
-      console.log('Native calendar creation failed, falling back to URL/ICS:', nativeErr);
-      Alert.alert('Native Calendar Failed', `Native calendar creation failed: ${nativeErr.message}. Falling back to alternative method.`);
+      console.log('Direct create failed, falling back to ICS share:', nativeErr);
     }
 
-    // For iOS, we need to use a different approach since calshow: doesn't support pre-filled data
-    // We'll try to open the Calendar app and then provide ICS as backup
-    const calendarUrls = [
-      // iOS Calendar app - just show the date (user can create event manually)
-      `calshow:${startDate}`,
-      // Try to use the calendar:// scheme (may not work on all iOS versions)
-      `calendar://event?action=create&title=${title}&start=${startDate}&end=${endDate}&description=${encodedDescription}&location=${location}`,
-      // Google Calendar (fallback)
-      `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${startDate}/${endDate}&details=${encodedDescription}&location=${location}&ctz=UTC`,
-      // Android Calendar app
-      `content://com.android.calendar/time/${dueDate.getTime()}`,
-      // Outlook Calendar
-      `https://outlook.live.com/calendar/0/deeplink/compose?subject=${title}&startdt=${startDate}&enddt=${endDate}&body=${encodedDescription}&location=${location}`
-    ];
-
-    let opened = false;
-    for (const url of calendarUrls) {
-      try {
-        console.log('Trying URL:', url);
-        const canOpen = await Linking.canOpenURL(url);
-        console.log('Can open URL:', canOpen);
-        
-        if (canOpen) {
-          console.log('Opening URL:', url);
-          await Linking.openURL(url);
-          opened = true;
-          break;
-        }
-      } catch (e) {
-        console.log(`Failed to open ${url}:`, e);
-        continue;
-      }
-    }
-
-    // For iOS, always provide ICS file as it's the most reliable way to get pre-filled events
-    const icsContent = generateICSContent(point);
-    console.log('Generated ICS content:', icsContent);
-    
-    // Check if we're on iOS
-    const isIOS = Platform.OS === 'ios';
-    
-    if (isIOS) {
-      // On iOS, always use ICS file sharing for best results
-      console.log('iOS detected - using ICS share for pre-filled calendar event');
-      await Share.share({
-        message: `Add "${point.title}" to your calendar\n\nDue: ${dueDate.toLocaleDateString()}\nPriority: ${point.priority?.toUpperCase() || 'MEDIUM'}`,
-        url: `data:text/calendar;charset=utf8,${encodeURIComponent(icsContent)}`,
-        title: `Add to Calendar: ${point.title}`
-      });
-    } else if (!opened) {
-      // On Android, try URLs first, then fallback to ICS
-      console.log('No calendar app opened, using ICS share');
-      await Share.share({
-        message: `Add "${point.title}" to your calendar\n\nDue: ${dueDate.toLocaleDateString()}\nPriority: ${point.priority?.toUpperCase() || 'MEDIUM'}`,
-        url: `data:text/calendar;charset=utf8,${encodeURIComponent(icsContent)}`,
-        title: `Add to Calendar: ${point.title}`
-      });
-    } else {
-      console.log('Successfully opened calendar app');
-      // Also provide ICS as backup in case the URL didn't work properly
-      setTimeout(async () => {
-        try {
-          await Share.share({
-            message: `Backup: Add "${point.title}" to your calendar\n\nDue: ${dueDate.toLocaleDateString()}\nPriority: ${point.priority?.toUpperCase() || 'MEDIUM'}`,
-            url: `data:text/calendar;charset=utf8,${encodeURIComponent(icsContent)}`,
-            title: `Add to Calendar: ${point.title}`
-          });
-        } catch (e) {
-          console.log('Backup share failed:', e);
-        }
-      }, 2000);
-    }
+    // 3) Last resort: Share ICS to let user import
+    const icsContent = generateICSContent({ ...point, dueDate: start.toISOString() });
+    await Share.share({
+      message: `Add "${point.title}" to your calendar`,
+      url: `data:text/calendar;charset=utf8,${encodeURIComponent(icsContent)}`,
+      title: `Add to Calendar: ${point.title}`
+    });
   } catch (error) {
     console.error('Error creating calendar event:', error);
     Alert.alert('Error', 'Failed to create calendar event');
