@@ -68,24 +68,24 @@ export default function RecordScreen() {
       const rec = new Audio.Recording();
       await rec.prepareToRecordAsync({
         android: {
-          extension: '.wav',
-          outputFormat: Audio.AndroidOutputFormat.DEFAULT,
-          audioEncoder: Audio.AndroidAudioEncoder.DEFAULT,
+          extension: '.m4a',
+          outputFormat: Audio.AndroidOutputFormat.MPEG_4,
+          audioEncoder: Audio.AndroidAudioEncoder.AAC,
           sampleRate: 16000,
           numberOfChannels: 1,
-          bitRate: 64000
+          bitRate: 48000  // 48kbps compression
         },
         ios: {
-          extension: '.wav',
+          extension: '.m4a',
           audioQuality: Audio.IOSAudioQuality.MEDIUM,
           sampleRate: 16000,
           numberOfChannels: 1,
-          bitRate: 64000,
-          outputFormat: Audio.IOSOutputFormat.LINEARPCM
+          bitRate: 48000,  // 48kbps compression
+          outputFormat: Audio.IOSOutputFormat.MPEG4AAC
         },
         web: {
-          mimeType: 'audio/wav',
-          bitsPerSecond: 64000
+          mimeType: 'audio/mp4',
+          bitsPerSecond: 48000  // 48kbps compression
         }
       });
 
@@ -115,7 +115,7 @@ export default function RecordScreen() {
       setRecordingElapsedMs(0);
 
       // Copy to permanent storage
-      let permanentUri = `${FileSystem.documentDirectory}recording_${Date.now()}.wav`;
+      let permanentUri = `${FileSystem.documentDirectory}recording_${Date.now()}.m4a`;
       try {
         await FileSystem.copyAsync({
           from: tempUri,
@@ -165,7 +165,11 @@ export default function RecordScreen() {
       const audioBase64 = await FileSystem.readAsStringAsync(audioUri, { encoding: 'base64' });
       console.log('Audio size:', Math.round(audioBase64.length * 3 / 4 / 1024), 'KB');
       
-      const requestBody = { audioBase64, mime: 'audio/wav', lang: 'auto', summarize: true };
+      // Detect audio format from file extension
+      const mimeType = audioUri.toLowerCase().endsWith('.m4a') ? 'audio/mp4' : 'audio/wav';
+      console.log('Detected audio format:', mimeType);
+      
+      const requestBody = { audioBase64, mime: mimeType, lang: 'auto', summarize: true };
       console.log('Request body size:', JSON.stringify(requestBody).length, 'chars');
       
       // Add timeout to prevent hanging

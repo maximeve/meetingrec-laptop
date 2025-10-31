@@ -252,7 +252,11 @@ export default function ReviewScreen() {
       const audioBase64 = await FileSystem.readAsStringAsync(audioUri, { encoding: 'base64' });
       console.log('Audio base64 size:', Math.round(audioBase64.length * 3 / 4 / 1024), 'KB');
       
-      const requestBody = { audioBase64, mime: 'audio/wav', lang: 'auto', summarize: true };
+      // Detect audio format from file extension
+      const mimeType = audioUri.toLowerCase().endsWith('.m4a') ? 'audio/mp4' : 'audio/wav';
+      console.log('Detected audio format:', mimeType);
+      
+      const requestBody = { audioBase64, mime: mimeType, lang: 'auto', summarize: true };
       console.log('Request body size:', JSON.stringify(requestBody).length, 'chars');
       
       // Add timeout to prevent hanging
