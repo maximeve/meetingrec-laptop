@@ -15,6 +15,7 @@ import { useAudioCleanup } from '../hooks/useAudioCleanup';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import ActionablePointCard from '../components/ActionablePointCard';
 import { addToCalendar, generateICSContent } from '../utils/calendar';
+import { incrementRecordingTime } from '../utils/recordingStats';
 
 const DEEPGRAM_API = 'https://meeting-rec-api-git-main-maximeves-projects.vercel.app';
 const ACTIONABLE_API = 'https://meeting-rec-backend-git-main-maximeves-projects.vercel.app';
@@ -336,6 +337,12 @@ export default function ReviewScreen() {
         throw new Error(String(data?.error || 'Transcribe failed'));
       }
       setCurrentServerResult(data);
+      
+      // Update recording time in Supabase after successful upload
+      // Run in background - don't block the UI if it fails
+      incrementRecordingTime(audioDuration).catch((error) => {
+        console.error('Failed to update recording stats (non-blocking):', error);
+      });
     } catch (e: any) {
       console.error('Upload error:', e);
       
